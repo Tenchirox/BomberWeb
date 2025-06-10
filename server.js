@@ -20,6 +20,8 @@ const POWERUP_TYPES = {
 };
 const POWERUP_DURATION = 45000; // 45 seconds
 const POWERUP_SPAWN_CHANCE = 0.3; // 30% chance
+const POWERUP_ITEM_LIFETIME = 30000; // 30 seconds for item on map
+const POWERUP_ITEM_WARNING_DURATION = 5000; // Warning starts 5 seconds before despawn
 
 // Points d'apparition prédéfinis
 const spawnPoints = [
@@ -30,15 +32,23 @@ const spawnPoints = [
 ];
 let nextSpawnPointIndex = 0;
 
+// --- Game State Initialization Function ---
+function initializeGameState() {
+    console.log("Initializing new game state..."); // For server logging
+    const newMap = generateMap(); // generateMap() should still work as before
+    return {
+        map: newMap,
+        players: {},
+        bombs: {},
+        explosions: {},
+        powerUps: {},
+        isGameOver: false,
+        winnerName: null,
+    };
+}
+
 // --- État Global du Jeu ---
-// Initialisation de gameState APRÈS les constantes dont il dépend
-let gameState = {
-    map: generateMap(),
-    players: {},
-    bombs: {},
-    explosions: {},
-    powerUps: {} // Add this line
-};
+let gameState = initializeGameState();
 
 
 // --- Création du Serveur WebSocket ---
@@ -46,12 +56,25 @@ const wss = new WebSocket.Server({ port: PORT });
 console.log(`Serveur Bomberman démarré sur le port ${PORT}`);
 
 wss.on('connection', (ws) => {
-    console.log('Nouveau joueur connecté.');
+    console.log('New player attempting to connect.'); // For server logging
 
+    // Reset game state if game is over or server is effectively empty
+    if (gameState.isGameOver || Object.keys(gameState.players).length === 0) {
+        if (gameState.isGameOver) {
+            console.log('Game is over, resetting game state for new game.');
+        } else if (Object.keys(gameState.players).length === 0) {
+            console.log('No players in game, ensuring fresh state.');
+        }
+        gameState = initializeGameState(); // Reset the global gameState
+        // Reset any other necessary global variables, like nextSpawnPointIndex
+        nextSpawnPointIndex = 0; // Reset this
+    }
+
+    // Now proceed with adding the player as before
     const playerId = `player_${Math.random().toString(36).substr(2, 9)}`;
     ws.playerId = playerId;
 
-    addPlayer(playerId, "Joueur");
+    addPlayer(playerId, "Player"); // Name will be updated by client 'join' message.
 
     ws.send(JSON.stringify({ type: 'init', playerId }));
 
@@ -59,7 +82,8 @@ wss.on('connection', (ws) => {
         try {
             const data = JSON.parse(message);
             const player = gameState.players[playerId];
-            if (!player || !player.isAlive) return;
+            // Add gameState.isGameOver check here
+            if (!player || !player.isAlive || gameState.isGameOver) return;
 
             switch (data.type) {
                 case 'join':
@@ -102,8 +126,9 @@ function addPlayer(playerId, name) {
         lives: 3,
         bombPower: 1,       // Base stat
         bombCountMax: 1,    // Base stat
-        inputs: { up: false, down: false, left: false, right: false },
         activePowerUps: [], // Initialize active power-ups array
+        kills: 0, // Add this line
+        inputs: { up: false, down: false, left: false, right: false },
     };
 }
 
@@ -198,6 +223,15 @@ function isColliding(x, y, playerId, radius = TILE_SIZE / 3) {
 }
 
 function updateGameState() {
+    if (gameState.isGameOver) {
+        // Game is over, halt most updates.
+        // Active explosions will still run their course based on current logic
+        // unless explicitly cleared or their update loop also checks isGameOver.
+        // To freeze explosions, their update loop also needs this check.
+        // Bombs also won't tick down if we return early from player input processing.
+        return;
+    }
+
     // Mettre à jour la position des joueurs
     for (const id in gameState.players) {
         const player = gameState.players[id];
@@ -260,26 +294,47 @@ function updateGameState() {
         }
     }
 
-    // Mettre à jour les bombes
-    for (const id in gameState.bombs) {
-        const bomb = gameState.bombs[id];
-        bomb.timer -= TICK_RATE_MS;
-        if (bomb.timer <= 0) {
-            explodeBomb(bomb);
-            delete gameState.bombs[id];
-        }
-    }
-    
-    // Mettre à jour les explosions
-    for (const id in gameState.explosions) {
-        const explosion = gameState.explosions[id];
-        explosion.lifetime -= TICK_RATE_MS;
-        if (explosion.lifetime <= 0) {
-            delete gameState.explosions[id];
+    // Update Power-up Lifecycles (items on map)
+    for (const powerUpId in gameState.powerUps) {
+        const powerUp = gameState.powerUps[powerUpId];
+        // Ensure createdAt exists to prevent errors if a powerUp somehow misses it
+        if (powerUp.createdAt) {
+            const age = Date.now() - powerUp.createdAt;
+
+            if (age > POWERUP_ITEM_LIFETIME) {
+                delete gameState.powerUps[powerUpId]; // Despawn: remove if lifetime exceeded
+            } else if (age > POWERUP_ITEM_LIFETIME - POWERUP_ITEM_WARNING_DURATION) {
+                powerUp.isDespawning = true; // Flag for client to flash
+            }
+            // No need for an else to set isDespawning to false,
+            // as it's only added when true, and object is deleted otherwise or when collected.
         }
     }
 
-    // NEW: Handle Power-up Expiry
+    // Mettre à jour les bombes
+    if (!gameState.isGameOver) { // Add this check
+        for (const id in gameState.bombs) {
+            const bomb = gameState.bombs[id];
+            bomb.timer -= TICK_RATE_MS;
+            if (bomb.timer <= 0) {
+                explodeBomb(bomb);
+                delete gameState.bombs[id];
+            }
+        }
+    } // End of check
+    
+    // Mettre à jour les explosions
+    if (!gameState.isGameOver) { // Add this check
+        for (const id in gameState.explosions) {
+            const explosion = gameState.explosions[id];
+            explosion.lifetime -= TICK_RATE_MS;
+            if (explosion.lifetime <= 0) {
+                delete gameState.explosions[id];
+            }
+        }
+    } // End of check
+
+    // NEW: Handle Power-up Expiry (for player buffs)
     for (const playerId in gameState.players) {
         const player = gameState.players[playerId];
         if (!player.activePowerUps || player.activePowerUps.length === 0) {
@@ -305,6 +360,37 @@ function updateGameState() {
             }
         }
         player.activePowerUps = remainingPowerUps;
+    }
+
+    // Check for Game End Condition
+    if (!gameState.isGameOver) { // Only check if game is not already over
+        // USE THIS: Count players who have lives remaining
+        const playersWithLivesRemaining = Object.values(gameState.players).filter(p => p.lives > 0);
+        const totalPlayers = Object.keys(gameState.players).length; // Total registered players
+
+        if (totalPlayers === 1) {
+            // Single player scenario: game ends if the player has no lives left
+            if (playersWithLivesRemaining.length === 0) {
+                gameState.isGameOver = true;
+                // Ensure the player object actually exists before trying to access name,
+                // though if totalPlayers is 1, it should.
+                // For winnerName, it's more of a "Game Over" status for solo.
+                gameState.winnerName = "Game Over";
+            }
+        } else if (totalPlayers > 1) {
+            // Multi-player scenario
+            if (playersWithLivesRemaining.length === 1) {
+                gameState.isGameOver = true;
+                gameState.winnerName = playersWithLivesRemaining[0].name; // The sole survivor
+            } else if (playersWithLivesRemaining.length === 0) {
+                // All players have 0 lives (e.g., simultaneous elimination)
+                gameState.isGameOver = true;
+                gameState.winnerName = "Draw!";
+            }
+        }
+        // If totalPlayers === 0, no game to end.
+        // If (totalPlayers === 1 and playersWithLivesRemaining === 1), game continues.
+        // If (totalPlayers > 1 and playersWithLivesRemaining > 1), game continues.
     }
 }
 
@@ -337,7 +423,8 @@ function explodeBomb(bomb) {
                         id: powerUpId,
                         x: x,
                         y: y,
-                        type: chosenType
+                        type: chosenType,
+                        createdAt: Date.now() // Add this line
                     };
                 }
                 break;
@@ -361,8 +448,16 @@ function explodeBomb(bomb) {
 
         if (segments.some(seg => seg.x === playerGridX && seg.y === playerGridY)) {
             player.lives--;
+
+            // Check for non-self-kill and increment score for the bomb owner
+            if (bomb.ownerId !== victimId) {
+                const killerPlayer = gameState.players[bomb.ownerId];
+                if (killerPlayer) { // Ensure killer exists
+                    killerPlayer.kills = (killerPlayer.kills || 0) + 1; // Increment kills for bomb owner
+                }
+            }
             
-            const killer = gameState.players[bomb.ownerId];
+            const killer = gameState.players[bomb.ownerId]; // This line is repeated, but it's fine for getting the name
             const killerName = killer ? killer.name : "une bombe";
             
             // Envoyer un message spécifique au joueur tué

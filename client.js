@@ -43,7 +43,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 const playerCount = Object.keys(gameState.players).length;
                 const myPlayer = gameState.players[myPlayerId];
                 const livesText = myPlayer ? ` | Vies: ${myPlayer.lives}` : '';
-                statusBar.textContent = `Joueurs: ${playerCount}${livesText}`;
+                const killsText = myPlayer ? ` | Kills: ${myPlayer.kills || 0}` : ''; // Add this
+                statusBar.textContent = `Joueurs: ${playerCount}${livesText}${killsText}`; // Modify this
             }
 
             if (message.type === 'playerKilled') {
@@ -70,10 +71,35 @@ document.addEventListener('DOMContentLoaded', () => {
     function draw() {
         // Effacer le canvas
         ctx.clearRect(0, 0, canvas.width, canvas.height);
-        ctx.fillStyle = '#3c3c3c';
+        ctx.fillStyle = '#3c3c3c'; // Background color
         ctx.fillRect(0, 0, canvas.width, canvas.height);
 
         if (!gameState.map) {
+            requestAnimationFrame(draw);
+            return;
+        }
+
+        if (gameState.isGameOver) {
+            ctx.fillStyle = 'white';
+            ctx.font = 'bold 30px "Press Start 2P"';
+            ctx.textAlign = 'center';
+            ctx.fillText('Game Over!', canvas.width / 2, canvas.height / 3);
+
+            ctx.font = 'bold 24px "Press Start 2P"';
+            const winnerText = gameState.winnerName ? `Winner: ${gameState.winnerName}` : "It's a Draw!";
+            ctx.fillText(winnerText, canvas.width / 2, canvas.height / 2);
+
+            ctx.font = '16px "Press Start 2P"';
+            let scoreYPos = canvas.height / 2 + 60;
+            ctx.fillText("Scores:", canvas.width / 2, scoreYPos);
+            scoreYPos += 30;
+
+            for (const playerId in gameState.players) {
+                const p = gameState.players[playerId];
+                ctx.fillText(`${p.name}: ${p.kills || 0} kills`, canvas.width / 2, scoreYPos);
+                scoreYPos += 25;
+            }
+            // Keep RAF for potential future "play again" UI.
             requestAnimationFrame(draw);
             return;
         }
@@ -98,6 +124,16 @@ document.addEventListener('DOMContentLoaded', () => {
         if (gameState.powerUps) { // Check if powerUps object exists
             for (const id in gameState.powerUps) {
                 const powerUp = gameState.powerUps[id];
+
+                // Flashing logic for despawning power-ups
+                if (powerUp.isDespawning === true) {
+                    // Flash every 250ms (toggle visibility)
+                    // Adjust 250 to change flash speed
+                    if (Math.floor(Date.now() / 250) % 2 === 0) {
+                        continue; // Skip drawing this frame to make it flash
+                    }
+                }
+
                 const drawX = powerUp.x * TILE_SIZE + TILE_SIZE / 2;
                 const drawY = powerUp.y * TILE_SIZE + TILE_SIZE / 2;
                 const radius = TILE_SIZE / 4; // Slightly smaller than bombs
@@ -195,6 +231,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- Gestion des Entrées ---
     const inputs = { up: false, down: false, left: false, right: false };
     window.addEventListener('keydown', (e) => {
+        if (gameState.isGameOver) return; // Add this line at the start
         let changed = false;
         switch (e.key) {
             case 'ArrowUp': case 'w': if (!inputs.up) { inputs.up = true; changed = true; } break;
