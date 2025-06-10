@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bomberman en Ligne</title>
+    <!-- Liaison vers la feuille de style externe -->
+    <link rel="stylesheet" href="style.css">
+    <!-- Police de style rétro depuis Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+</head>
+<body>
+
+    <div class="game-container">
+        <!-- Écran de connexion, visible au début -->
+        <div id="connection-screen">
+            <h1>Bomberman</h1>
+            <input type="text" id="player-name" placeholder="Entrez votre nom" maxlength="12">
+            <br>
+            <button id="connect-button">Rejoindre la partie</button>
+        </div>
+
+        <!-- Zone de jeu, cachée au début -->
+        <div id="game-area">
+            <canvas id="game-canvas" width="600" height="520"></canvas>
+            <div id="status-bar">En attente de joueurs...</div>
+        </div>
+    </div>
+
+    <!-- Liaison vers le script externe -->
+    <script src="client.js"></script>
+</body>
+</html>
