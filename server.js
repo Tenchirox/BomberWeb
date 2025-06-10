@@ -13,6 +13,14 @@ const BOMB_TIMER = 7000; // 7 secondes
 const EXPLOSION_LIFETIME = 500; // 0.5 seconde
 const RESPAWN_DELAY = 3000; // 3 secondes
 
+// --- Power-up Constants ---
+const POWERUP_TYPES = {
+    BOMB_POWER: 'bombPower',
+    BOMB_COUNT: 'bombCount'
+};
+const POWERUP_DURATION = 45000; // 45 seconds
+const POWERUP_SPAWN_CHANCE = 0.3; // 30% chance
+
 // Points d'apparition prédéfinis
 const spawnPoints = [
     { x: TILE_SIZE + TILE_SIZE / 2, y: TILE_SIZE + TILE_SIZE / 2 },
@@ -28,7 +36,8 @@ let gameState = {
     map: generateMap(),
     players: {},
     bombs: {},
-    explosions: {}
+    explosions: {},
+    powerUps: {} // Add this line
 };
 
 
@@ -91,10 +100,10 @@ function addPlayer(playerId, name) {
         speed: PLAYER_SPEED,
         isAlive: true,
         lives: 3,
-        bombPower: 1,
-        bombCountMax: 1,
+        bombPower: 1,       // Base stat
+        bombCountMax: 1,    // Base stat
         inputs: { up: false, down: false, left: false, right: false },
-        // ghostBombId n'est plus nécessaire avec la nouvelle logique
+        activePowerUps: [], // Initialize active power-ups array
     };
 }
 
@@ -160,19 +169,18 @@ function isColliding(x, y, playerId, radius = TILE_SIZE / 3) {
     const checkCollisionAt = (gx, gy) => {
         // Collision avec les murs
         const tile = gameState.map.grid[gy]?.[gx];
-        if (tile === 1 || tile === 2) return true;
+        if (tile === 1 || tile === 2) return true; // Wall or destructible wall
         
         // Collision avec les bombes
         const bomb = Object.values(gameState.bombs).find(b => b.x === gx && b.y === gy);
         if (bomb) {
-            // Si le joueur est SUR la case de la bombe, il peut la traverser pour en sortir.
-            if (bomb.x === playerCurrentGridX && bomb.y === playerCurrentGridY) {
-                return false; 
+            // Allow player to pass through their own bomb
+            if (bomb.ownerId === playerId) {
+                return false; // No collision with own bomb
             }
-            // Toute autre bombe est un obstacle solide.
-            return true;
+            return true; // Collision with other players' bombs
         }
-        return false;
+        return false; // No collision with empty tile
     };
     
     // Vérifier les 4 coins de la "hitbox" du joueur à la position future potentielle (x,y)
@@ -210,6 +218,46 @@ function updateGameState() {
         if (!isColliding(player.x, player.y + dy, id)) {
             player.y += dy;
         }
+
+        // NEW: Check for power-up collection
+        if (player.isAlive) { // Only living players can collect power-ups
+            const playerGridX = Math.floor(player.x / TILE_SIZE);
+            const playerGridY = Math.floor(player.y / TILE_SIZE);
+
+            for (const powerUpId in gameState.powerUps) {
+                const powerUp = gameState.powerUps[powerUpId];
+                if (powerUp.x === playerGridX && powerUp.y === playerGridY) {
+                    // Player collects the power-up
+                    let statToModify;
+                    // let originalStatValue; // Not used in this version of the logic yet
+
+                    if (powerUp.type === POWERUP_TYPES.BOMB_POWER) {
+                        statToModify = 'bombPower';
+                        // originalStatValue = player.bombPower;
+                        player.bombPower++;
+                    } else if (powerUp.type === POWERUP_TYPES.BOMB_COUNT) {
+                        statToModify = 'bombCountMax';
+                        // originalStatValue = player.bombCountMax;
+                        player.bombCountMax++;
+                    }
+
+                    // Add to active power-ups for timed effect
+                    const buffId = `buff_${player.id}_${Date.now()}`;
+                    player.activePowerUps.push({
+                        id: buffId,
+                        powerUpId: powerUp.id, // ID of the power-up item collected
+                        type: powerUp.type,
+                        statModified: statToModify,
+                        valueChange: 1, // For now, all power-ups grant +1
+                        expiresAt: Date.now() + POWERUP_DURATION
+                    });
+
+                    delete gameState.powerUps[powerUpId]; // Remove power-up from map
+                    // TODO: Send message to client about power-up collection (will be handled in a later step)
+                    break; // Player can only collect one power-up per tick
+                }
+            }
+        }
     }
 
     // Mettre à jour les bombes
@@ -230,6 +278,34 @@ function updateGameState() {
             delete gameState.explosions[id];
         }
     }
+
+    // NEW: Handle Power-up Expiry
+    for (const playerId in gameState.players) {
+        const player = gameState.players[playerId];
+        if (!player.activePowerUps || player.activePowerUps.length === 0) {
+            continue; // Skip if player has no active power-ups
+        }
+
+        const remainingPowerUps = [];
+        for (let i = 0; i < player.activePowerUps.length; i++) {
+            const powerUpBuff = player.activePowerUps[i];
+            if (Date.now() >= powerUpBuff.expiresAt) {
+                // Power-up has expired, revert the stat
+                if (powerUpBuff.statModified === 'bombPower') {
+                    player.bombPower -= powerUpBuff.valueChange;
+                    if (player.bombPower < 1) player.bombPower = 1; // Ensure stat doesn't go below base
+                } else if (powerUpBuff.statModified === 'bombCountMax') {
+                    player.bombCountMax -= powerUpBuff.valueChange;
+                    if (player.bombCountMax < 1) player.bombCountMax = 1; // Ensure stat doesn't go below base
+                }
+                // TODO: Send message to client about power-up expiry (will be handled in a later step)
+            } else {
+                // Power-up is still active
+                remainingPowerUps.push(powerUpBuff);
+            }
+        }
+        player.activePowerUps = remainingPowerUps;
+    }
 }
 
 function explodeBomb(bomb) {
@@ -246,9 +322,24 @@ function explodeBomb(bomb) {
             const tile = gameState.map.grid[y][x];
             segments.push({ x, y });
             
-            if (tile === 1) break;
-            if (tile === 2) {
-                gameState.map.grid[y][x] = 0;
+            if (tile === 1) break; // Indestructible wall
+            if (tile === 2) { // Destructible wall
+                gameState.map.grid[y][x] = 0; // Clear the wall
+
+                // Check if there's already a bomb or power-up at this location
+                const existingBomb = Object.values(gameState.bombs).find(b => b.x === x && b.y === y);
+                const existingPowerUp = Object.values(gameState.powerUps).find(p => p.x === x && p.y === y);
+
+                if (!existingBomb && !existingPowerUp && Math.random() < POWERUP_SPAWN_CHANCE) {
+                    const powerUpId = `powerup_${Date.now()}_${x}_${y}`;
+                    const chosenType = Math.random() < 0.5 ? POWERUP_TYPES.BOMB_POWER : POWERUP_TYPES.BOMB_COUNT;
+                    gameState.powerUps[powerUpId] = {
+                        id: powerUpId,
+                        x: x,
+                        y: y,
+                        type: chosenType
+                    };
+                }
                 break;
             }
         }

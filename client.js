@@ -6,6 +6,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const canvas = document.getElementById('game-canvas');
     const ctx = canvas.getContext('2d');
     const statusBar = document.getElementById('status-bar');
+    const powerUpTimersUI = document.getElementById('power-up-timers'); // Add this
 
     let socket;
     let gameState = {};
@@ -92,6 +93,40 @@ document.addEventListener('DOMContentLoaded', () => {
                 ctx.fillRect(x * TILE_SIZE, y * TILE_SIZE, TILE_SIZE, TILE_SIZE);
             }
         }
+
+        // Dessiner les Power-ups
+        if (gameState.powerUps) { // Check if powerUps object exists
+            for (const id in gameState.powerUps) {
+                const powerUp = gameState.powerUps[id];
+                const drawX = powerUp.x * TILE_SIZE + TILE_SIZE / 2;
+                const drawY = powerUp.y * TILE_SIZE + TILE_SIZE / 2;
+                const radius = TILE_SIZE / 4; // Slightly smaller than bombs
+
+                ctx.beginPath();
+                if (powerUp.type === 'bombPower') { // Assuming 'bombPower' is the type string from server
+                    ctx.fillStyle = 'red'; // Example: Red for Bomb Power
+                    // Draw a simple 'P' for Power
+                    ctx.arc(drawX, drawY, radius, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.fillStyle = 'white';
+                    ctx.font = 'bold 12px "Press Start 2P"';
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    ctx.fillText('P', drawX, drawY);
+                } else if (powerUp.type === 'bombCount') { // Assuming 'bombCount' is the type string from server
+                    ctx.fillStyle = 'blue'; // Example: Blue for Bomb Count
+                    // Draw a simple 'C' for Count
+                    ctx.arc(drawX, drawY, radius, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.fillStyle = 'white';
+                    ctx.font = 'bold 12px "Press Start 2P"';
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    ctx.fillText('C', drawX, drawY);
+                }
+                // Add more types here if needed in the future
+            }
+        }
         
         // Dessiner les bombes
         for (const id in gameState.bombs) {
@@ -133,6 +168,25 @@ document.addEventListener('DOMContentLoaded', () => {
             ctx.font = '10px "Press Start 2P"';
             ctx.textAlign = 'center';
             ctx.fillText(player.name, player.x, player.y - TILE_SIZE / 2);
+        }
+
+        // Display Active Power-up Timers for myPlayer
+        if (myPlayerId && gameState.players && gameState.players[myPlayerId] && gameState.players[myPlayerId].activePowerUps) {
+            const myPlayer = gameState.players[myPlayerId];
+            let timersHTML = '';
+            myPlayer.activePowerUps.forEach(buff => {
+                const remainingTime = Math.max(0, Math.ceil((buff.expiresAt - Date.now()) / 1000));
+                let buffName = '';
+                if (buff.type === 'bombPower') buffName = 'Power';
+                else if (buff.type === 'bombCount') buffName = 'Count';
+
+                if (remainingTime > 0) {
+                    timersHTML += `<div>${buffName}: ${remainingTime}s</div>`;
+                }
+            });
+            powerUpTimersUI.innerHTML = timersHTML;
+        } else if (powerUpTimersUI) { // Ensure powerUpTimersUI exists
+            powerUpTimersUI.innerHTML = ''; // Clear if no player data or no active buffs
         }
         
         requestAnimationFrame(draw);
