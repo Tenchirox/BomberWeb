@@ -77,6 +77,7 @@ wss.on('connection', (ws) => {
     addPlayer(playerId, "Player"); // Name will be updated by client 'join' message.
 
     ws.send(JSON.stringify({ type: 'init', playerId }));
+    checkAndManageAIPlayer(); // Call after adding human player
 
     ws.on('message', (message) => {
         try {
@@ -102,19 +103,46 @@ wss.on('connection', (ws) => {
     });
 
     ws.on('close', () => {
-        console.log(`Joueur ${gameState.players[playerId]?.name || playerId} déconnecté.`);
-        delete gameState.players[playerId];
+        const player = gameState.players[ws.playerId]; // Get player before deleting
+        if (player) {
+            console.log(`Player ${player.name || ws.playerId} disconnected.`);
+            delete gameState.players[ws.playerId];
+        } else {
+            console.log(`Player ${ws.playerId} disconnected (was not found in gameState).`);
+        }
+
+        checkAndManageAIPlayer(); // Call here, after removing the player
     });
 });
 
 // --- Logique du Jeu ---
+function checkAndManageAIPlayer() {
+    const humanPlayers = Object.values(gameState.players).filter(p => !p.isAI);
+    const aiPlayers = Object.values(gameState.players).filter(p => p.isAI);
+
+    console.log(`Checking AI status: Humans: ${humanPlayers.length}, AI: ${aiPlayers.length}`);
+
+    if (humanPlayers.length === 1 && aiPlayers.length === 0) {
+        // Spawn AI player
+        const aiId = `ai_player_${Date.now()}`; // Unique ID for AI
+        console.log(`Spawning AI player with ID: ${aiId}`);
+        addPlayer(aiId, 'BotBomber', true);
+    } else if (aiPlayers.length > 0 && (humanPlayers.length >= 2 || humanPlayers.length === 0)) {
+        // Despawn AI player(s)
+        aiPlayers.forEach(aiPlayer => {
+            console.log(`Despawning AI player ${aiPlayer.name} (ID: ${aiPlayer.id})`);
+            delete gameState.players[aiPlayer.id];
+        });
+    }
+}
+
 function getNextSpawnPoint() {
     const point = spawnPoints[nextSpawnPointIndex];
     nextSpawnPointIndex = (nextSpawnPointIndex + 1) % spawnPoints.length; // Cycle through spawn points
     return point;
 }
 
-function addPlayer(playerId, name) {
+function addPlayer(playerId, name, isAI = false) { // Added isAI parameter with default
     const spawnPoint = getNextSpawnPoint();
     gameState.players[playerId] = {
         id: playerId,
@@ -124,12 +152,15 @@ function addPlayer(playerId, name) {
         speed: PLAYER_SPEED,
         isAlive: true,
         lives: 3,
-        bombPower: 1,       // Base stat
-        bombCountMax: 1,    // Base stat
-        activePowerUps: [], // Initialize active power-ups array
-        kills: 0, // Add this line
+        bombPower: 1,
+        bombCountMax: 1,
+        activePowerUps: [],
+        kills: 0,
+        isAI: isAI, // Store the isAI flag
         inputs: { up: false, down: false, left: false, right: false },
+        // aiState will be initialized lazily later if player.isAI is true
     };
+    console.log(`${isAI ? 'AI Player' : 'Human Player'} ${name} (ID: ${playerId}) added to game.`); // Log player type
 }
 
 function generateMap() {
@@ -192,11 +223,18 @@ function isColliding(x, y, playerId, radius = TILE_SIZE / 3) {
     const playerCurrentGridY = Math.floor(player.y / TILE_SIZE);
 
     const checkCollisionAt = (gx, gy) => {
-        // Collision avec les murs
-        const tile = gameState.map.grid[gy]?.[gx];
-        if (tile === 1 || tile === 2) return true; // Wall or destructible wall
+        // 1. Explicit boundary check (NEW)
+        if (gx < 0 || gx >= MAP_WIDTH || gy < 0 || gy >= MAP_HEIGHT) {
+            return true; // Collision with map boundary
+        }
+
+        // 2. Collision avec les murs (indestructible or destructible)
+        const tile = gameState.map.grid[gy][gx]; // No `?` needed after boundary check
+        if (tile === 1 || tile === 2) { // 1=Indestructible, 2=Destructible
+            return true;
+        }
         
-        // Collision avec les bombes
+        // 3. Collision avec les bombes
         const bomb = Object.values(gameState.bombs).find(b => b.x === gx && b.y === gy);
         if (bomb) {
             // Allow player to pass through their own bomb
@@ -237,6 +275,75 @@ function updateGameState() {
         const player = gameState.players[id];
         if (!player.isAlive) continue;
 
+        // AI Logic Block - sets player.inputs for AI players
+        if (player.isAI && player.isAlive) {
+            if (!player.aiState) {
+                player.aiState = { currentDirection: null, stepsToTake: 0, decisionCooldown: 0, stuckX: player.x, stuckY: player.y, stuckCount: 0 };
+            }
+
+            player.inputs = { up: false, down: false, left: false, right: false }; // Reset inputs for AI
+
+            if (player.aiState.decisionCooldown > 0) {
+                player.aiState.decisionCooldown--;
+            } else {
+                // Stuck detection: Check if position changed since last AI decision for movement
+                if (player.x === player.aiState.stuckX && player.y === player.aiState.stuckY) {
+                    player.aiState.stuckCount++;
+                } else {
+                    player.aiState.stuckCount = 0; // Reset if moved
+                    player.aiState.stuckX = player.x; // Update last known position
+                    player.aiState.stuckY = player.y;
+                }
+
+                if (player.aiState.stepsToTake <= 0 || player.aiState.stuckCount > 3) { // Stuck or finished path
+                    const directions = ['up', 'down', 'left', 'right'];
+                    player.aiState.currentDirection = directions[Math.floor(Math.random() * directions.length)];
+                    player.aiState.stepsToTake = TILE_SIZE * (Math.floor(Math.random() * 2) + 1); // 1-2 tiles
+                    player.aiState.decisionCooldown = Math.floor(Math.random() * 10) + 10; // 10-19 ticks cooldown
+                    player.aiState.stuckCount = 0;
+                    player.aiState.stuckX = player.x; // Reset stuck anchor position
+                    player.aiState.stuckY = player.y;
+                    // console.log(`AI ${player.id} new decision: dir=${player.aiState.currentDirection}, steps=${player.aiState.stepsToTake.toFixed(1)}`);
+                }
+            }
+
+            // Set input based on current direction if steps remain
+            if (player.aiState.stepsToTake > 0 && player.aiState.currentDirection && player.aiState.decisionCooldown === 0) {
+                player.inputs[player.aiState.currentDirection] = true;
+                player.aiState.stepsToTake -= player.speed; // Decrement intended steps
+                if (player.aiState.stepsToTake < 0) player.aiState.stepsToTake = 0;
+            }
+
+            // AI Bomb Placement Logic
+            if (player.aiState.bombCooldown === undefined) {
+                player.aiState.bombCooldown = 0;
+            }
+
+            if (player.aiState.bombCooldown > 0) {
+                player.aiState.bombCooldown--;
+            } else {
+                if (Math.random() < 0.02) { // 2% chance per tick if cooldown is 0
+                    const currentBombsByAI = Object.values(gameState.bombs).filter(b => b.ownerId === player.id).length;
+                    if (currentBombsByAI < player.bombCountMax) {
+                        const playerGridX = Math.floor(player.x / TILE_SIZE);
+                        const playerGridY = Math.floor(player.y / TILE_SIZE);
+                        const bombAtCurrentLocation = Object.values(gameState.bombs).some(b => b.x === playerGridX && b.y === playerGridY);
+
+                        if (!bombAtCurrentLocation) {
+                            placeBomb(player.id);
+                            console.log(`AI ${player.name} (ID: ${player.id}) placed a bomb.`);
+                            player.aiState.bombCooldown = 50; // Cooldown for ~1.6 seconds
+
+                            // Optional: Force AI to try and move after placing a bomb
+                            player.aiState.stepsToTake = 0;
+                            player.aiState.decisionCooldown = 0; // Allow immediate new movement decision
+                        }
+                    }
+                }
+            }
+        }
+
+        // Generic Player Movement (processes player.inputs set by human or AI)
         let dx = 0;
         let dy = 0;
 
