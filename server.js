@@ -5,9 +5,9 @@ const WebSocket = require('ws');
 // --- Constantes du Jeu ---
 const PORT = 8088; // Port mis à jour
 const TICK_RATE_MS = 1000 / 30; // 30 ticks par seconde
-const MAP_WIDTH = 15;
-const MAP_HEIGHT = 13;
-const PLAYER_SPEED = 2.5; // Pixels par tick
+const MAP_WIDTH = 17;
+const MAP_HEIGHT = 15;
+const PLAYER_SPEED = 4; // Pixels par tick
 const TILE_SIZE = 40;
 const BOMB_TIMER = 7000; // 7 secondes
 const EXPLOSION_LIFETIME = 500; // 0.5 seconde
@@ -160,19 +160,18 @@ function isColliding(x, y, playerId, radius = TILE_SIZE / 3) {
     const checkCollisionAt = (gx, gy) => {
         // Collision avec les murs
         const tile = gameState.map.grid[gy]?.[gx];
-        if (tile === 1 || tile === 2) return true;
+        if (tile === 1 || tile === 2) return true; // Wall or destructible wall
         
         // Collision avec les bombes
         const bomb = Object.values(gameState.bombs).find(b => b.x === gx && b.y === gy);
         if (bomb) {
-            // Si le joueur est SUR la case de la bombe, il peut la traverser pour en sortir.
-            if (bomb.x === playerCurrentGridX && bomb.y === playerCurrentGridY) {
-                return false; 
+            // Allow player to pass through their own bomb
+            if (bomb.ownerId === playerId) {
+                return false; // No collision with own bomb
             }
-            // Toute autre bombe est un obstacle solide.
-            return true;
+            return true; // Collision with other players' bombs
         }
-        return false;
+        return false; // No collision with empty tile
     };
     
     // Vérifier les 4 coins de la "hitbox" du joueur à la position future potentielle (x,y)
